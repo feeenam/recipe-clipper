@@ -9,6 +9,75 @@ interface ExtractedRecipe {
   steps: string[]
 }
 
+function flattenInstructions(instructions: unknown): string[] {
+  if (!instructions) return []
+  if (typeof instructions === 'string') {
+    // Some sites put the whole method as one newline-separated string.
+    return instructions
+      .split(/\r?\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+  }
+  if (Array.isArray(instructions)) {
+    return instructions.flatMap((item) => {
+      if (typeof item === 'string') return [item]
+      if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>
+        // HowToSection nests further HowToStep entries under itemListElement.
+        if (obj['@type'] === 'HowToSection' && Array.isArray(obj.itemListElement)) {
+          return flattenInstructions(obj.itemListElement)
+        }
+        if (typeof obj.text === 'string') return [obj.text]
+        if (typeof obj.name === 'string') return [obj.name]
+      }
+      return []
+    })
+  }
+  return []
+}
+
+function findRecipeNode(node: unknown): Record<string, unknown> | null {
+  if (!node || typeof node !== 'object') return null
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = findRecipeNode(item)
+      if (found) return found
+    }
+    return null
+  }
+  const obj = node as Record<string, unknown>
+  const type = obj['@type']
+  const isRecipe = type === 'Recipe' || (Array.isArray(type) && type.includes('Recipe'))
+  if (isRecipe) return obj
+  if (Array.isArray(obj['@graph'])) return findRecipeNode(obj['@graph'])
+  return null
+}
+
+function extractJsonLdRecipe(document: Document): ExtractedRecipe | null {
+  const scripts = document.querySelectorAll('script[type="application/ld+json"]')
+  for (const script of Array.from(scripts)) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(script.textContent ?? '')
+    } catch {
+      continue
+    }
+    const recipeNode = findRecipeNode(parsed)
+    if (!recipeNode) continue
+
+    const title = typeof recipeNode.name === 'string' ? recipeNode.name : null
+    const ingredients = Array.isArray(recipeNode.recipeIngredient)
+      ? (recipeNode.recipeIngredient as unknown[]).filter((i): i is string => typeof i === 'string')
+      : []
+    const steps = flattenInstructions(recipeNode.recipeInstructions)
+
+    if (title && ingredients.length > 0 && steps.length > 0) {
+      return { title, ingredients, steps }
+    }
+  }
+  return null
+}
+
 function extractJson(text: string): ExtractedRecipe | null {
   const match = text.match(/\{[\s\S]*\}/)
   if (!match) return null
@@ -99,14 +168,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const html = await pageResp.text()
 
     const { document } = parseHTML(html)
-    const article = new Readability(document as unknown as Document).parse()
-    const articleText = article?.textContent?.trim()
 
-    if (!articleText) {
-      return res.status(422).json({ error: 'Could not find readable article content on that page' })
+    // Most recipe sites embed a schema.org Recipe block for SEO — if it's there,
+    // use it directly and skip the LLM call entirely (free, exact, no tokens spent).
+    let extracted = extractJsonLdRecipe(document as unknown as Document)
+
+    if (!extracted) {
+      const article = new Readability(document as unknown as Document).parse()
+      const articleText = article?.textContent?.trim()
+
+      if (!articleText) {
+        return res.status(422).json({ error: 'Could not find readable article content on that page' })
+      }
+
+      extracted = await callGemini(articleText, geminiKey)
     }
-
-    const extracted = await callGemini(articleText, geminiKey)
 
     const supabaseUrl = process.env.VITE_SUPABASE_URL!
     const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY!
