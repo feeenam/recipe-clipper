@@ -5,7 +5,7 @@
   ],
   "functions": {
     "api/extract-recipe.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     }
   }
 }

@@ -86,10 +86,15 @@ export function HomePage() {
                       e.preventDefault()
                       navigate(`/recipe/${r.id}`)
                     }}
-                    className="flex items-baseline justify-between py-4 hover:bg-gray-100 px-2 -mx-2 rounded"
+                    className="flex items-center gap-3 py-4 hover:bg-gray-100 px-2 -mx-2 rounded"
                   >
-                    <span className="text-gray-900 font-medium">{r.title}</span>
-                    <span className="text-gray-400 text-sm ml-4 whitespace-nowrap">{sourceDomain(r.url)}</span>
+                    {r.image_url ? (
+                      <img src={r.image_url} alt="" className="w-12 h-12 rounded object-cover shrink-0" />
+                    ) : (
+                      <div className="w-12 h-12 rounded bg-gray-200 shrink-0" />
+                    )}
+                    <span className="text-gray-900 font-medium flex-1">{r.title}</span>
+                    <span className="text-gray-400 text-sm whitespace-nowrap">{sourceDomain(r.url)}</span>
                   </a>
                 </li>
               ))}

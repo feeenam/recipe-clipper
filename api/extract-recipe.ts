@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
 import { Readability } from '@mozilla/readability'
 import { parseHTML } from 'linkedom'
+import { randomUUID } from 'node:crypto'
 
 interface ExtractedRecipe {
   title: string
@@ -136,6 +137,48 @@ ${articleText.slice(0, 15000)}`
   return extracted
 }
 
+async function generateDishImage(title: string, apiKey: string): Promise<{ data: Buffer; mimeType: string } | null> {
+  try {
+    const resp = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent',
+      {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: `A professional, appetizing food photograph of "${title}", plated and ready to eat, natural lighting, shallow depth of field. No text, no watermarks, no logos.`,
+                },
+              ],
+            },
+          ],
+        }),
+      }
+    )
+
+    if (!resp.ok) return null
+
+    const data = await resp.json()
+    const parts = data.candidates?.[0]?.content?.parts ?? []
+    for (const part of parts) {
+      if (part.inlineData?.data) {
+        return {
+          data: Buffer.from(part.inlineData.data, 'base64'),
+          mimeType: part.inlineData.mimeType || 'image/png',
+        }
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
@@ -188,6 +231,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY!
     const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
+    // Best-effort — a failed image generation shouldn't fail the whole save.
+    let imageUrl: string | null = null
+    const image = await generateDishImage(extracted.title, geminiKey)
+    if (image) {
+      const ext = image.mimeType.split('/')[1] || 'png'
+      const path = `${randomUUID()}.${ext}`
+      const { error: uploadError } = await supabase.storage
+        .from('recipe-images')
+        .upload(path, image.data, { contentType: image.mimeType })
+      if (!uploadError) {
+        imageUrl = supabase.storage.from('recipe-images').getPublicUrl(path).data.publicUrl
+      }
+    }
+
     const { data, error } = await supabase
       .from('recipes')
       .insert({
@@ -195,6 +252,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         title: extracted.title,
         ingredients: extracted.ingredients,
         steps: extracted.steps,
+        image_url: imageUrl,
       })
       .select()
       .single()

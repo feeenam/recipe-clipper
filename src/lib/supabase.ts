@@ -11,5 +11,6 @@ export interface Recipe {
   title: string
   ingredients: string[]
   steps: string[]
+  image_url: string | null
   created_at: string
 }

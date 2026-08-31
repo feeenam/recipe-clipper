@@ -37,6 +37,14 @@ export function RecipePage() {
       <div className="w-full max-w-xl">
         <Link to="/" className="text-gray-400 hover:text-gray-600 text-sm mb-6 inline-block">&larr; All recipes</Link>
 
+        {recipe.image_url && (
+          <img
+            src={recipe.image_url}
+            alt={recipe.title}
+            className="w-full aspect-video object-cover rounded-lg mb-6 border border-gray-200"
+          />
+        )}
+
         <h1 className="text-3xl font-semibold text-gray-900 mb-1">{recipe.title}</h1>
         <a
           href={recipe.url}
