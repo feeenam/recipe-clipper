@@ -137,9 +137,10 @@ ${articleText.slice(0, 15000)}`
   return extracted
 }
 
-async function generateDishImage(title: string): Promise<{ data: Buffer; mimeType: string } | null> {
+async function generateDishImage(title: string, ingredients: string[]): Promise<{ data: Buffer; mimeType: string } | null> {
   try {
-    const prompt = `Professional appetizing food photograph of ${title}, plated and ready to eat, natural lighting, shallow depth of field. No text, no watermarks, no logos.`
+    const ingredientList = ingredients.slice(0, 12).join(', ')
+    const prompt = `Anime style illustration of ${title}, made with ${ingredientList}, plated and ready to eat, vibrant colors, studio ghibli-esque food art. No text, no watermarks, no logos.`
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=576&model=flux&nologo=true`
 
     const resp = await fetch(url)
@@ -216,7 +217,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Best-effort — a failed image generation shouldn't fail the whole save.
     let imageUrl: string | null = null
-    const image = await generateDishImage(extracted.title)
+    const image = await generateDishImage(extracted.title, extracted.ingredients)
     if (image) {
       const ext = image.mimeType.split('/')[1] || 'png'
       const path = `${randomUUID()}.${ext}`
