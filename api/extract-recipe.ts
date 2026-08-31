@@ -157,11 +157,17 @@ async function generateDishImage(title: string, apiKey: string): Promise<{ data:
               ],
             },
           ],
+          generationConfig: {
+            responseModalities: ['IMAGE'],
+          },
         }),
       }
     )
 
-    if (!resp.ok) return null
+    if (!resp.ok) {
+      console.error('Gemini image request failed:', resp.status, await resp.text())
+      return null
+    }
 
     const data = await resp.json()
     const parts = data.candidates?.[0]?.content?.parts ?? []
@@ -173,8 +179,10 @@ async function generateDishImage(title: string, apiKey: string): Promise<{ data:
         }
       }
     }
+    console.error('Gemini image response had no inline image data:', JSON.stringify(data).slice(0, 500))
     return null
-  } catch {
+  } catch (err) {
+    console.error('Gemini image generation threw:', err)
     return null
   }
 }
@@ -242,6 +250,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .upload(path, image.data, { contentType: image.mimeType })
       if (!uploadError) {
         imageUrl = supabase.storage.from('recipe-images').getPublicUrl(path).data.publicUrl
+      } else {
+        console.error('Recipe image upload failed:', uploadError.message)
       }
     }
 
