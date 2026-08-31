@@ -137,52 +137,27 @@ ${articleText.slice(0, 15000)}`
   return extracted
 }
 
-async function generateDishImage(title: string, apiKey: string): Promise<{ data: Buffer; mimeType: string } | null> {
+async function generateDishImage(title: string): Promise<{ data: Buffer; mimeType: string } | null> {
   try {
-    const resp = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent',
-      {
-        method: 'POST',
-        headers: {
-          'x-goog-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: `A professional, appetizing food photograph of "${title}", plated and ready to eat, natural lighting, shallow depth of field. No text, no watermarks, no logos.`,
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            responseModalities: ['IMAGE'],
-          },
-        }),
-      }
-    )
+    const prompt = `Professional appetizing food photograph of ${title}, plated and ready to eat, natural lighting, shallow depth of field. No text, no watermarks, no logos.`
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=576&model=flux&nologo=true`
 
+    const resp = await fetch(url)
     if (!resp.ok) {
-      console.error('Gemini image request failed:', resp.status, await resp.text())
+      console.error('Pollinations image request failed:', resp.status)
       return null
     }
 
-    const data = await resp.json()
-    const parts = data.candidates?.[0]?.content?.parts ?? []
-    for (const part of parts) {
-      if (part.inlineData?.data) {
-        return {
-          data: Buffer.from(part.inlineData.data, 'base64'),
-          mimeType: part.inlineData.mimeType || 'image/png',
-        }
-      }
+    const mimeType = resp.headers.get('content-type') || 'image/jpeg'
+    if (!mimeType.startsWith('image/')) {
+      console.error('Pollinations returned non-image content-type:', mimeType)
+      return null
     }
-    console.error('Gemini image response had no inline image data:', JSON.stringify(data).slice(0, 500))
-    return null
+
+    const arrayBuffer = await resp.arrayBuffer()
+    return { data: Buffer.from(arrayBuffer), mimeType }
   } catch (err) {
-    console.error('Gemini image generation threw:', err)
+    console.error('Pollinations image generation threw:', err)
     return null
   }
 }
@@ -241,7 +216,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Best-effort — a failed image generation shouldn't fail the whole save.
     let imageUrl: string | null = null
-    const image = await generateDishImage(extracted.title, geminiKey)
+    const image = await generateDishImage(extracted.title)
     if (image) {
       const ext = image.mimeType.split('/')[1] || 'png'
       const path = `${randomUUID()}.${ext}`
