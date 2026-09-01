@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { supabase, type Recipe } from '../lib/supabase'
+import { useWakeLock } from '../lib/useWakeLock'
 
 export function RecipePage() {
   const { id } = useParams()
   const [recipe, setRecipe] = useState<Recipe | null>(null)
   const [loading, setLoading] = useState(true)
+  const { isActive: keepAwake, isSupported: wakeLockSupported, toggle: toggleWakeLock } = useWakeLock()
 
   useEffect(() => {
     supabase
@@ -35,7 +37,22 @@ export function RecipePage() {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center px-4 py-16">
       <div className="w-full max-w-xl">
-        <Link to="/" className="text-gray-400 hover:text-gray-600 text-sm mb-6 inline-block">&larr; All recipes</Link>
+        <div className="flex items-center justify-between mb-6">
+          <Link to="/" className="text-gray-400 hover:text-gray-600 text-sm inline-block">&larr; All recipes</Link>
+
+          {wakeLockSupported && (
+            <button
+              onClick={toggleWakeLock}
+              className={`text-sm px-3 py-1.5 rounded-full border transition-colors ${
+                keepAwake
+                  ? 'bg-gray-900 text-white border-gray-900'
+                  : 'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
+              }`}
+            >
+              {keepAwake ? '☀︎ Screen awake' : 'Keep screen awake'}
+            </button>
+          )}
+        </div>
 
         {recipe.image_url && (
           <img
