@@ -9,8 +9,12 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Supabase REST API
+      - name: Write to keepalive row
         run: |
           curl -sf -o /dev/null -w "HTTP %{http_code}\n" \
-            "${{ secrets.VITE_SUPABASE_URL }}/rest/v1/recipes?limit=1" \
-            -H "apikey: ${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+            -X PATCH \
+            "${{ secrets.VITE_SUPABASE_URL }}/rest/v1/keepalive?id=eq.1" \
+            -H "apikey: ${{ secrets.VITE_SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{\"pinged_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
