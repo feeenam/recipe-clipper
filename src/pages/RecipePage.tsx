@@ -63,14 +63,16 @@ export function RecipePage() {
         )}
 
         <h1 className="text-3xl font-semibold text-gray-900 mb-1">{recipe.title}</h1>
-        <a
-          href={recipe.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-gray-400 text-sm hover:text-gray-600 break-all"
-        >
-          {recipe.url}
-        </a>
+        {recipe.url && (
+          <a
+            href={recipe.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-gray-400 text-sm hover:text-gray-600 break-all"
+          >
+            {recipe.url}
+          </a>
+        )}
 
         <div className="mt-10">
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Ingredients</h2>

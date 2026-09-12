@@ -168,16 +168,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const { url } = req.body ?? {}
-  if (!url || typeof url !== 'string') {
-    return res.status(400).json({ error: 'Missing "url" in request body' })
-  }
+  const { url, text } = req.body ?? {}
+  const pastedText = typeof text === 'string' ? text.trim() : ''
 
-  let parsedUrl: URL
-  try {
-    parsedUrl = new URL(url)
-  } catch {
-    return res.status(400).json({ error: 'Not a valid URL' })
+  let parsedUrl: URL | null = null
+  if (typeof url === 'string' && url.trim()) {
+    try {
+      parsedUrl = new URL(url)
+    } catch {
+      return res.status(400).json({ error: 'Not a valid URL' })
+    }
+  } else if (!pastedText) {
+    return res.status(400).json({ error: 'Missing "url" in request body' })
   }
 
   const geminiKey = process.env.GEMINI_API_KEY
@@ -186,29 +188,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const pageResp = await fetch(parsedUrl.toString(), {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RecipeClipper/1.0)' },
-    })
-    if (!pageResp.ok) {
-      return res.status(502).json({ error: `Could not fetch that page (${pageResp.status})` })
-    }
-    const html = await pageResp.text()
+    let extracted: ExtractedRecipe | null = null
 
-    const { document } = parseHTML(html)
-
-    // Most recipe sites embed a schema.org Recipe block for SEO — if it's there,
-    // use it directly and skip the LLM call entirely (free, exact, no tokens spent).
-    let extracted = extractJsonLdRecipe(document as unknown as Document)
-
-    if (!extracted) {
-      const article = new Readability(document as unknown as Document).parse()
-      const articleText = article?.textContent?.trim()
-
-      if (!articleText) {
-        return res.status(422).json({ error: 'Could not find readable article content on that page' })
+    if (pastedText) {
+      extracted = await callGemini(pastedText, geminiKey)
+    } else {
+      const pageResp = await fetch(parsedUrl!.toString(), {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RecipeClipper/1.0)' },
+      })
+      if (!pageResp.ok) {
+        return res.status(502).json({ error: `Could not fetch that page (${pageResp.status})` })
       }
+      const html = await pageResp.text()
 
-      extracted = await callGemini(articleText, geminiKey)
+      const { document } = parseHTML(html)
+
+      // Most recipe sites embed a schema.org Recipe block for SEO — if it's there,
+      // use it directly and skip the LLM call entirely (free, exact, no tokens spent).
+      extracted = extractJsonLdRecipe(document as unknown as Document)
+
+      if (!extracted) {
+        const article = new Readability(document as unknown as Document).parse()
+        const articleText = article?.textContent?.trim()
+
+        if (!articleText) {
+          return res.status(422).json({ error: 'Could not find readable article content on that page' })
+        }
+
+        extracted = await callGemini(articleText, geminiKey)
+      }
     }
 
     const supabaseUrl = process.env.VITE_SUPABASE_URL!
@@ -234,7 +242,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data, error } = await supabase
       .from('recipes')
       .insert({
-        url: parsedUrl.toString(),
+        url: parsedUrl ? parsedUrl.toString() : '',
         title: extracted.title,
         ingredients: extracted.ingredients,
         steps: extracted.steps,

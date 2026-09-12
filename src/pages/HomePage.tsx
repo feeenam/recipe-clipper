@@ -5,6 +5,8 @@ import { supabase, type Recipe } from '../lib/supabase'
 export function HomePage() {
   const navigate = useNavigate()
   const [url, setUrl] = useState('')
+  const [text, setText] = useState('')
+  const [pasteMode, setPasteMode] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [recipes, setRecipes] = useState<Recipe[]>([])
@@ -26,7 +28,7 @@ export function HomePage() {
       const res = await fetch('/api/extract-recipe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify(pasteMode ? { text, url } : { url }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -54,23 +56,62 @@ export function HomePage() {
         <h1 className="text-3xl font-semibold text-gray-900 mb-2">Recipe Clipper</h1>
         <p className="text-gray-500 mb-8">Paste a recipe URL. Get just the ingredients and steps.</p>
 
-        <form onSubmit={handleSubmit} className="flex gap-2 mb-2">
-          <input
-            type="url"
-            required
-            placeholder="https://example.com/some-recipe"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            className="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-gray-900"
-          />
-          <button
-            type="submit"
-            disabled={loading}
-            className="bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white font-medium px-5 py-3 rounded-lg whitespace-nowrap"
-          >
-            {loading ? 'Clipping…' : 'Save Recipe'}
-          </button>
+        <form onSubmit={handleSubmit} className="mb-2">
+          {pasteMode ? (
+            <div className="flex flex-col gap-2">
+              <input
+                type="url"
+                placeholder="Source URL (optional)"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                className="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-gray-900"
+              />
+              <textarea
+                required
+                placeholder="Paste the recipe text here…"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={8}
+                className="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-gray-900 resize-y"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white font-medium px-5 py-3 rounded-lg whitespace-nowrap"
+              >
+                {loading ? 'Clipping…' : 'Save Recipe'}
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                type="url"
+                required
+                placeholder="https://example.com/some-recipe"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                className="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-gray-900"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white font-medium px-5 py-3 rounded-lg whitespace-nowrap"
+              >
+                {loading ? 'Clipping…' : 'Save Recipe'}
+              </button>
+            </div>
+          )}
         </form>
+        <button
+          type="button"
+          onClick={() => {
+            setPasteMode((v) => !v)
+            setError(null)
+          }}
+          className="text-gray-400 hover:text-gray-600 text-sm mb-8 underline"
+        >
+          {pasteMode ? 'Paste a URL instead' : "Site blocking us? Paste the recipe text instead"}
+        </button>
         {error && <p className="text-red-600 text-sm mb-8">{error}</p>}
 
         <div className="mt-12">
