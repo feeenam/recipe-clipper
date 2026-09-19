@@ -2,7 +2,7 @@ name: Supabase Keepalive
 
 on:
   schedule:
-    - cron: '21 9 */3 * *'  # every 3 days, well under Supabase's 7-day pause window
+    - cron: '21 9 * * *'  # daily — GitHub Actions schedules can be delayed/skipped, so don't rely on the full 7-day margin
   workflow_dispatch:
 
 jobs:
