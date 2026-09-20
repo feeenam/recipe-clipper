@@ -97,8 +97,10 @@ function extractJson(text: string): ExtractedRecipe | null {
   }
 }
 
-async function callGemini(articleText: string, apiKey: string): Promise<ExtractedRecipe> {
-  const prompt = `You are extracting a recipe from an article's text. Return ONLY strict JSON, no markdown fences, in this exact shape:
+const RECIPE_EXTRACTION_TIMEOUT_MS = 15000
+
+function buildRecipePrompt(articleText: string): string {
+  return `You are extracting a recipe from an article's text. Return ONLY strict JSON, no markdown fences, in this exact shape:
 {"title": "...", "ingredients": ["2 cups flour", "1 tsp salt", ...], "steps": ["Preheat oven to 350F.", "Mix dry ingredients.", ...]}
 
 Rules:
@@ -109,8 +111,28 @@ Rules:
 
 Article text:
 ${articleText.slice(0, 15000)}`
+}
 
-  const resp = await fetch(
+/** Thrown by a model call for a failure that's worth retrying against the backup model. */
+export class RetryableLlmError extends Error {}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new RetryableLlmError('Request timed out')
+    }
+    throw err
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+export async function callGemini(articleText: string, apiKey: string): Promise<ExtractedRecipe> {
+  const resp = await fetchWithTimeout(
     'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent',
     {
       method: 'POST',
@@ -119,12 +141,18 @@ ${articleText.slice(0, 15000)}`
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: [{ parts: [{ text: buildRecipePrompt(articleText) }] }],
       }),
-    }
+    },
+    RECIPE_EXTRACTION_TIMEOUT_MS
   )
 
   if (!resp.ok) {
+    // 429 (rate limit) and 5xx (Gemini-side errors) are worth a shot on the backup model.
+    // 4xx other than 429 means our request was bad, and the backup will fail the same way.
+    if (resp.status === 429 || resp.status >= 500) {
+      throw new RetryableLlmError(`Gemini request failed: ${resp.status}`)
+    }
     throw new Error(`Gemini request failed: ${resp.status}`)
   }
 
@@ -135,6 +163,63 @@ ${articleText.slice(0, 15000)}`
     throw new Error('Could not parse a recipe out of that page')
   }
   return extracted
+}
+
+export async function callGroq(articleText: string, apiKey: string): Promise<ExtractedRecipe> {
+  const resp = await fetchWithTimeout(
+    'https://api.groq.com/openai/v1/chat/completions',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
+        messages: [{ role: 'user', content: buildRecipePrompt(articleText) }],
+      }),
+    },
+    RECIPE_EXTRACTION_TIMEOUT_MS
+  )
+
+  if (!resp.ok) {
+    throw new Error(`Groq request failed: ${resp.status}`)
+  }
+
+  const data = await resp.json()
+  const text: string = data.choices?.[0]?.message?.content ?? ''
+  const extracted = extractJson(text)
+  if (!extracted) {
+    throw new Error('Could not parse a recipe out of that page')
+  }
+  return extracted
+}
+
+/**
+ * Extracts a recipe from article text, trying Gemini first and falling back to Groq
+ * (a different provider, so this survives a Gemini-wide outage, not just one model)
+ * on a timeout, rate limit, or server error. Any other failure (bad request, unparsable
+ * response) is assumed to affect the backup the same way, so it's not worth retrying.
+ *
+ * NOTE — if this endpoint gets enough traffic to matter: this is a reactive, per-request
+ * fallback with no shared state, which is fine at low volume but means every single
+ * request pays the cost of failing against the primary before trying the backup. The
+ * dashboard-api pattern (see LlmChatService._resolveModel) avoids that by keeping a
+ * per-model `isOnline` flag (e.g. in Vercel KV/Redis) that a scheduled liveness probe
+ * flips on majority-vote failures, so a struggling model is skipped pre-flight instead
+ * of being retried on every request. Worth adopting here once volume/latency justifies
+ * the added infra.
+ */
+export async function extractRecipe(articleText: string, geminiKey: string, groqKey?: string): Promise<ExtractedRecipe> {
+  try {
+    return await callGemini(articleText, geminiKey)
+  } catch (err) {
+    if (!(err instanceof RetryableLlmError) || !groqKey) {
+      throw err
+    }
+    console.error('llm_fallback_used: Gemini failed, retrying with Groq:', err.message)
+    return await callGroq(articleText, groqKey)
+  }
 }
 
 async function generateDishImage(title: string, ingredients: string[]): Promise<{ data: Buffer; mimeType: string } | null> {
@@ -186,12 +271,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!geminiKey) {
     return res.status(500).json({ error: 'GEMINI_API_KEY not configured' })
   }
+  const groqKey = process.env.GROQ_API_KEY
 
   try {
     let extracted: ExtractedRecipe | null = null
 
     if (pastedText) {
-      extracted = await callGemini(pastedText, geminiKey)
+      extracted = await extractRecipe(pastedText, geminiKey, groqKey)
     } else {
       const pageResp = await fetch(parsedUrl!.toString(), {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RecipeClipper/1.0)' },
@@ -215,7 +301,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return res.status(422).json({ error: 'Could not find readable article content on that page' })
         }
 
-        extracted = await callGemini(articleText, geminiKey)
+        extracted = await extractRecipe(articleText, geminiKey, groqKey)
       }
     }
 
