@@ -1,4 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { isAuthedRequest } from '../lib/admin-auth'
+import { callGemini, callGroq } from './extract-recipe'
 
 const TEST_ARTICLE = `
 Ingredients:
@@ -35,36 +37,24 @@ async function probe(fn: (() => Promise<unknown>) | null): Promise<ProviderStatu
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  try {
-    const { isAuthedRequest } = await import('./_admin-auth')
-    const { callGemini, callGroq } = await import('./extract-recipe')
-
-    if (req.method !== 'GET') {
-      return res.status(405).json({ error: 'Method not allowed' })
-    }
-
-    if (!isAuthedRequest(req)) {
-      return res.status(401).json({ error: 'Not authenticated' })
-    }
-
-    const geminiKey = process.env.GEMINI_API_KEY
-    const groqKey = process.env.GROQ_API_KEY
-
-    const [gemini, groq] = await Promise.all([
-      probe(geminiKey ? () => callGemini(TEST_ARTICLE, geminiKey) : null),
-      probe(groqKey ? () => callGroq(TEST_ARTICLE, groqKey) : null),
-    ])
-
-    return res.status(200).json({
-      primary: { name: 'Gemini (gemini-flash-lite-latest)', ...gemini },
-      backup: { name: 'Groq (openai/gpt-oss-120b)', ...groq },
-    })
-  } catch (err) {
-    console.error('admin-status crashed:', err)
-    return res.status(500).json({
-      error: 'DEBUG: admin-status crashed',
-      message: err instanceof Error ? err.message : String(err),
-      stack: err instanceof Error ? err.stack : undefined,
-    })
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' })
   }
+
+  if (!isAuthedRequest(req)) {
+    return res.status(401).json({ error: 'Not authenticated' })
+  }
+
+  const geminiKey = process.env.GEMINI_API_KEY
+  const groqKey = process.env.GROQ_API_KEY
+
+  const [gemini, groq] = await Promise.all([
+    probe(geminiKey ? () => callGemini(TEST_ARTICLE, geminiKey) : null),
+    probe(groqKey ? () => callGroq(TEST_ARTICLE, groqKey) : null),
+  ])
+
+  return res.status(200).json({
+    primary: { name: 'Gemini (gemini-flash-lite-latest)', ...gemini },
+    backup: { name: 'Groq (openai/gpt-oss-120b)', ...groq },
+  })
 }
