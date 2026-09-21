@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { isAuthedRequest } from '../lib/admin-auth'
+import { isAuthedRequest } from './lib/admin-auth'
 import { callGemini, callGroq } from './extract-recipe'
 
 const TEST_ARTICLE = `
