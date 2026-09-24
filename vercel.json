@@ -8,7 +8,7 @@
       "maxDuration": 60
     },
     "api/voice-assistant.ts": {
-      "maxDuration": 15
+      "maxDuration": 20
     }
   }
 }

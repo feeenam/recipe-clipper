@@ -1,7 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 
-const VOICE_ASSISTANT_TIMEOUT_MS = 8000
-const MAX_TRANSCRIPT_LENGTH = 300
+const ROUTING_TIMEOUT_MS = 8000
+const TRANSCRIPTION_TIMEOUT_MS = 10000
+const MAX_AUDIO_BASE64_LENGTH = 3_000_000
+const NO_SPEECH_PROB_THRESHOLD = 0.6
 
 type Direction = 'next' | 'previous' | 'repeat' | 'current'
 
@@ -10,6 +12,51 @@ interface VoiceAssistantResult {
   newStep?: number
   finished?: boolean
   shouldStop?: boolean
+  noop?: boolean
+}
+
+const MIME_TO_EXTENSION: Record<string, string> = {
+  'audio/webm': 'webm',
+  'audio/ogg': 'ogg',
+  'audio/mp4': 'mp4',
+}
+
+function extensionForMimeType(mimeType: string): string {
+  const base = mimeType.split(';')[0].trim().toLowerCase()
+  return MIME_TO_EXTENSION[base] ?? 'webm'
+}
+
+interface Transcription {
+  text: string
+  noSpeechProb: number | null
+}
+
+async function transcribeAudio(audioBuffer: Buffer, mimeType: string, apiKey: string): Promise<Transcription> {
+  const ext = extensionForMimeType(mimeType)
+  const form = new FormData()
+  form.append('file', new Blob([audioBuffer], { type: mimeType }), `audio.${ext}`)
+  form.append('model', 'whisper-large-v3-turbo')
+  form.append('response_format', 'verbose_json')
+
+  const resp = await fetchWithTimeout(
+    'https://api.groq.com/openai/v1/audio/transcriptions',
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    },
+    TRANSCRIPTION_TIMEOUT_MS
+  )
+
+  if (!resp.ok) {
+    throw new Error(`Groq transcription failed: ${resp.status}`)
+  }
+
+  const data = await resp.json()
+  const text: string = typeof data.text === 'string' ? data.text.trim() : ''
+  const noSpeechProb: number | null = typeof data.segments?.[0]?.no_speech_prob === 'number' ? data.segments[0].no_speech_prob : null
+
+  return { text, noSpeechProb }
 }
 
 const SYSTEM_PROMPT = `You are a strict command router for a hands-free cooking voice assistant. You have no general knowledge and no ability to converse. Your ONLY job is to pick exactly one of the provided tools that best matches what the user said.
@@ -110,7 +157,7 @@ async function routeTranscript(transcript: string, apiKey: string): Promise<Rout
         tool_choice: 'required',
       }),
     },
-    VOICE_ASSISTANT_TIMEOUT_MS
+    ROUTING_TIMEOUT_MS
   )
 
   if (!resp.ok) {
@@ -195,14 +242,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const { transcript, steps, ingredients, currentStep } = req.body ?? {}
+  const { audio, mimeType, steps, ingredients, currentStep } = req.body ?? {}
 
-  if (typeof transcript !== 'string' || !transcript.trim()) {
-    return res.status(400).json({ error: 'Missing "transcript" in request body' })
+  if (typeof audio !== 'string' || !audio.trim()) {
+    return res.status(400).json({ error: 'Missing "audio" in request body' })
   }
-  if (transcript.length > MAX_TRANSCRIPT_LENGTH) {
-    return res.status(400).json({ error: 'Transcript too long' })
+  if (audio.length > MAX_AUDIO_BASE64_LENGTH) {
+    return res.status(400).json({ error: 'Audio too large' })
   }
+  const safeMimeType = typeof mimeType === 'string' && mimeType ? mimeType : 'audio/webm'
   const safeSteps = Array.isArray(steps) ? steps.filter((s): s is string => typeof s === 'string') : []
   const safeIngredients = Array.isArray(ingredients) ? ingredients.filter((i): i is string => typeof i === 'string') : []
   const safeCurrentStep = Math.max(0, Math.min(typeof currentStep === 'number' ? currentStep : 0, safeSteps.length))
@@ -213,9 +261,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const toolCall = await routeTranscript(transcript.trim(), apiKey)
+    const audioBuffer = Buffer.from(audio, 'base64')
+    const { text, noSpeechProb } = await transcribeAudio(audioBuffer, safeMimeType, apiKey)
+
+    if (!text || (noSpeechProb !== null && noSpeechProb > NO_SPEECH_PROB_THRESHOLD)) {
+      return res.status(200).json({ speech: '', noop: true } satisfies VoiceAssistantResult)
+    }
+
+    const toolCall = await routeTranscript(text, apiKey)
     const result = executeTool(toolCall, { steps: safeSteps, ingredients: safeIngredients, currentStep: safeCurrentStep })
-    return res.status(200).json(result)
+    return res.status(200).json({ ...result, noop: false })
   } catch (err) {
     console.error('voice_assistant_error:', err)
     return res.status(200).json({
