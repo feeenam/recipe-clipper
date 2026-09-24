@@ -2,12 +2,19 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { supabase, type Recipe } from '../lib/supabase'
 import { useWakeLock } from '../lib/useWakeLock'
+import { useVoiceAssistant } from '../lib/useVoiceAssistant'
 
 export function RecipePage() {
   const { id } = useParams()
   const [recipe, setRecipe] = useState<Recipe | null>(null)
   const [loading, setLoading] = useState(true)
   const { isActive: keepAwake, isSupported: wakeLockSupported, toggle: toggleWakeLock } = useWakeLock()
+  const {
+    isSupported: voiceSupported,
+    status: voiceStatus,
+    currentStep: voiceStep,
+    toggle: toggleVoiceAssistant,
+  } = useVoiceAssistant({ steps: recipe?.steps ?? [], ingredients: recipe?.ingredients ?? [] })
 
   useEffect(() => {
     supabase
@@ -40,18 +47,36 @@ export function RecipePage() {
         <div className="flex items-center justify-between mb-6">
           <Link to="/" className="text-gray-400 hover:text-gray-600 text-sm inline-block">&larr; All recipes</Link>
 
-          {wakeLockSupported && (
-            <button
-              onClick={toggleWakeLock}
-              className={`text-sm px-3 py-1.5 rounded-full border transition-colors ${
-                keepAwake
-                  ? 'bg-gray-900 text-white border-gray-900'
-                  : 'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
-              }`}
-            >
-              {keepAwake ? '☀︎ Screen awake' : 'Keep screen awake'}
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {voiceSupported && (
+              <button
+                onClick={toggleVoiceAssistant}
+                className={`text-sm px-3 py-1.5 rounded-full border transition-colors ${
+                  voiceStatus !== 'off'
+                    ? 'bg-gray-900 text-white border-gray-900'
+                    : 'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
+                }`}
+              >
+                {voiceStatus === 'listening' && '🎙️ Listening…'}
+                {voiceStatus === 'thinking' && '🤔 Thinking…'}
+                {voiceStatus === 'speaking' && '🔊 Speaking…'}
+                {voiceStatus === 'off' && '🎙️ Voice assistant'}
+              </button>
+            )}
+
+            {wakeLockSupported && (
+              <button
+                onClick={toggleWakeLock}
+                className={`text-sm px-3 py-1.5 rounded-full border transition-colors ${
+                  keepAwake
+                    ? 'bg-gray-900 text-white border-gray-900'
+                    : 'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
+                }`}
+              >
+                {keepAwake ? '☀︎ Screen awake' : 'Keep screen awake'}
+              </button>
+            )}
+          </div>
         </div>
 
         {recipe.image_url && (
@@ -87,7 +112,12 @@ export function RecipePage() {
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Steps</h2>
           <ol className="space-y-4">
             {recipe.steps.map((step, i) => (
-              <li key={i} className="flex gap-3 text-gray-700">
+              <li
+                key={i}
+                className={`flex gap-3 rounded-md px-2 py-1 -mx-2 transition-colors ${
+                  voiceStatus !== 'off' && i === voiceStep ? 'bg-yellow-100 text-gray-900' : 'text-gray-700'
+                }`}
+              >
                 <span className="font-medium text-gray-400">{i + 1}.</span>
                 <span>{step}</span>
               </li>

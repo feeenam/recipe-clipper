@@ -6,6 +6,9 @@
   "functions": {
     "api/extract-recipe.ts": {
       "maxDuration": 60
+    },
+    "api/voice-assistant.ts": {
+      "maxDuration": 15
     }
   }
 }
