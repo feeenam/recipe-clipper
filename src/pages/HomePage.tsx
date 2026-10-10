@@ -43,11 +43,12 @@ export function HomePage() {
 
   // If the URL points past the last page (e.g. recipes were removed), snap back to it.
   useEffect(() => {
-    if (!recipesLoading && requestedPage > totalPages) goToPage(totalPages)
+    // replace so the invalid entry doesn't stay in history and trap the Back button.
+    if (!recipesLoading && requestedPage > totalPages) goToPage(totalPages, { replace: true })
   }, [recipesLoading, requestedPage, totalPages])
 
-  function goToPage(next: number) {
-    setSearchParams(next <= 1 ? {} : { page: String(next) })
+  function goToPage(next: number, options?: { replace?: boolean }) {
+    setSearchParams(next <= 1 ? {} : { page: String(next) }, options)
     window.scrollTo({ top: 0 })
   }
 
