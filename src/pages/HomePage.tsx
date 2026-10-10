@@ -1,23 +1,55 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase, type Recipe } from '../lib/supabase'
+
+const PAGE_SIZE = 10
 
 export function HomePage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [url, setUrl] = useState('')
   const [text, setText] = useState('')
   const [pasteMode, setPasteMode] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [totalCount, setTotalCount] = useState(0)
+  const [recipesLoading, setRecipesLoading] = useState(true)
+
+  // Page lives in the URL so back-navigation from a recipe returns to the same page.
+  const requestedPage = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
+  const page = Math.min(requestedPage, totalPages)
 
   useEffect(() => {
+    let cancelled = false
+    setRecipesLoading(true)
+    const from = (requestedPage - 1) * PAGE_SIZE
     supabase
       .from('recipes')
-      .select('*')
+      .select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
-      .then(({ data }) => setRecipes(data ?? []))
-  }, [])
+      .range(from, from + PAGE_SIZE - 1)
+      .then(({ data, count }) => {
+        if (cancelled) return
+        setRecipes(data ?? [])
+        setTotalCount(count ?? 0)
+        setRecipesLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [requestedPage])
+
+  // If the URL points past the last page (e.g. recipes were removed), snap back to it.
+  useEffect(() => {
+    if (!recipesLoading && requestedPage > totalPages) goToPage(totalPages)
+  }, [recipesLoading, requestedPage, totalPages])
+
+  function goToPage(next: number) {
+    setSearchParams(next <= 1 ? {} : { page: String(next) })
+    window.scrollTo({ top: 0 })
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -115,7 +147,9 @@ export function HomePage() {
         {error && <p className="text-red-600 text-sm mb-8">{error}</p>}
 
         <div className="mt-12">
-          {recipes.length === 0 ? (
+          {recipesLoading && recipes.length === 0 ? (
+            <p className="text-gray-400 text-sm">Loading recipes…</p>
+          ) : totalCount === 0 ? (
             <p className="text-gray-400 text-sm">No recipes saved yet.</p>
           ) : (
             <ul className="divide-y divide-gray-200 border-t border-b border-gray-200">
@@ -140,6 +174,30 @@ export function HomePage() {
                 </li>
               ))}
             </ul>
+          )}
+
+          {totalPages > 1 && (
+            <nav aria-label="Recipe pages" className="flex items-center justify-between mt-6 text-sm">
+              <button
+                type="button"
+                onClick={() => goToPage(page - 1)}
+                disabled={page <= 1 || recipesLoading}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Previous
+              </button>
+              <span className="text-gray-500">
+                Page {page} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => goToPage(page + 1)}
+                disabled={page >= totalPages || recipesLoading}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Next
+              </button>
+            </nav>
           )}
         </div>
       </div>
