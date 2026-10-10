@@ -67,8 +67,16 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 function speak(text: string, onEnd?: () => void) {
-  window.speechSynthesis.cancel()
-  const utterance = new SpeechSynthesisUtterance(text)
+  // Some browsers' TTS engines (notably macOS system voices in Firefox/Safari) emit an
+  // audible click when the audio output stream is torn down right at an utterance's end.
+  // Padding with a trailing pause and slightly lowering volume/pitch reduces how abrupt
+  // (and how loud) that cutoff sounds — this is a platform audio-engine artifact we can't
+  // fully eliminate from JS, only soften.
+  if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+    window.speechSynthesis.cancel()
+  }
+  const utterance = new SpeechSynthesisUtterance(`${text} .`)
+  utterance.volume = 0.85
   if (onEnd) utterance.onend = onEnd
   window.speechSynthesis.speak(utterance)
 }
