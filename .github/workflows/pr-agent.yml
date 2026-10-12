@@ -24,9 +24,10 @@ jobs:
         uses: qodo-ai/pr-agent@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Free-tier Gemini via Google AI Studio
-          config.model: "gemini/gemini-3.8-flash"
-          config.fallback_models: '["gemini/gemini-3.5-flash-lite"]'
+          # Free-tier Gemini via Google AI Studio. Override models without a PR via repo variables
+          # PR_AGENT_MODEL / PR_AGENT_FALLBACK_MODEL (Settings > Secrets and variables > Actions > Variables).
+          config.model: "${{ vars.PR_AGENT_MODEL || 'gemini/gemini-3.8-flash' }}"
+          config.fallback_models: "[\"${{ vars.PR_AGENT_FALLBACK_MODEL || 'gemini/gemini-3.5-flash-lite' }}\"]"
           config.custom_model_max_tokens: "100000"
           GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           github_action_config.auto_review: "true"
