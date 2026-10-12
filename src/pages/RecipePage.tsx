@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { supabase, type Recipe } from '../lib/supabase'
 import { useWakeLock } from '../lib/useWakeLock'
 import { useVoiceAssistant } from '../lib/useVoiceAssistant'
 
 export function RecipePage() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const [recipe, setRecipe] = useState<Recipe | null>(null)
   const [loading, setLoading] = useState(true)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const { isActive: keepAwake, isSupported: wakeLockSupported, toggle: toggleWakeLock } = useWakeLock()
   const {
     isSupported: voiceSupported,
@@ -27,6 +31,42 @@ export function RecipePage() {
         setLoading(false)
       })
   }, [id])
+
+  // The admin cookie is HttpOnly, so ask the server whether this visitor is logged in.
+  // Any failure (including `vite dev`, which doesn't serve /api) just means "not admin".
+  useEffect(() => {
+    fetch('/api/delete-recipe')
+      .then((res) => res.json())
+      .then((data) => setIsAdmin(data?.admin === true))
+      .catch(() => setIsAdmin(false))
+  }, [])
+
+  async function handleDelete() {
+    if (!recipe || deleting) return
+    if (!window.confirm(`Delete "${recipe.title}"? This can't be undone.`)) return
+
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      const res = await fetch('/api/delete-recipe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: recipe.id }),
+      })
+      if (res.status === 401) {
+        setIsAdmin(false)
+        throw new Error('Admin session expired. Log in again at /admin.')
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to delete recipe')
+      }
+      navigate('/')
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Something went wrong')
+      setDeleting(false)
+    }
+  }
 
   if (loading) {
     return <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-400">Loading…</div>
@@ -76,8 +116,19 @@ export function RecipePage() {
                 {keepAwake ? '☀︎ Screen awake' : 'Keep screen awake'}
               </button>
             )}
+
+            {isAdmin && (
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="text-sm px-3 py-1.5 rounded-full border border-red-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
+        {deleteError && <p className="text-red-600 text-sm mb-4 text-right">{deleteError}</p>}
 
         {recipe.image_url && (
           <img

@@ -21,13 +21,15 @@ Paste a recipe URL (or the page text) and get a clean, ad-free recipe: title, in
 - `useVoiceAssistant` records mic audio with `MediaRecorder`, detects end of speech by silence, and posts the audio to `api/voice-assistant.ts`.
 - The API transcribes it with Whisper, then a Groq model acts as a strict command router: it must call exactly one tool (next / previous / repeat / current step, look up an ingredient, stop). The server executes the tool against the recipe and returns text to speak, so the LLM never answers freely.
 
-### Admin (`/admin`)
+### Admin (`/admin`) and deleting recipes
+Log in at `/admin` and a Delete button appears on every recipe page (with a confirm prompt). Deletion goes through `api/delete-recipe.ts`, which checks the admin cookie and uses the service-role key; the anon key has no delete permission on purpose. It also removes the recipe's dish image from storage.
+
 A password-protected status page (`api/admin-*.ts`) that probes the Gemini and Groq providers and shows whether each is online. The auth helpers are intentionally duplicated across the three files because Vercel's bundler would not include shared modules (see the note in `api/admin-login.ts`).
 
 ## Project layout
 
 ```
-api/                    Serverless functions (extract-recipe, voice-assistant, admin-*)
+api/                    Serverless functions (extract-recipe, voice-assistant, delete-recipe, admin-*)
 src/pages/              HomePage (add + list recipes), RecipePage (cooking mode), AdminPage
 src/lib/                supabase client, useWakeLock, useVoiceAssistant
 scripts/                One-off maintenance scripts (backfill-clean-recipes.ts)
@@ -52,7 +54,8 @@ Environment variables:
 | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | frontend and `extract-recipe` |
 | `GEMINI_API_KEY` | `extract-recipe`, admin status |
 | `GROQ_API_KEY` | `extract-recipe` fallback, `voice-assistant`, admin status |
-| `ADMIN_PASSWORD` | `/admin` login |
+| `ADMIN_PASSWORD` | `/admin` login, admin-only delete |
+| `SUPABASE_SERVICE_ROLE_KEY` | `delete-recipe` (server-only; never expose to the browser) |
 
 Run the SQL in `supabase-schema.sql` in your Supabase project once to create the tables and bucket.
 
