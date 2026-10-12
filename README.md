@@ -30,6 +30,7 @@ A password-protected status page (`api/admin-*.ts`) that probes the Gemini and G
 api/                    Serverless functions (extract-recipe, voice-assistant, admin-*)
 src/pages/              HomePage (add + list recipes), RecipePage (cooking mode), AdminPage
 src/lib/                supabase client, useWakeLock, useVoiceAssistant
+scripts/                One-off maintenance scripts (backfill-clean-recipes.ts)
 supabase-schema.sql     Tables, RLS policies, storage bucket, keepalive table
 .github/workflows/      keepalive.yml (daily Supabase ping), pr-agent.yml (AI PR review)
 ```
@@ -60,6 +61,7 @@ Run the SQL in `supabase-schema.sql` in your Supabase project once to create the
 - `npm run dev` start the dev server
 - `npm run build` typecheck and build
 - `npm run typecheck` TypeScript only
+- `node scripts/backfill-clean-recipes.ts` reads saved recipes and writes SQL to decode HTML entities (e.g. `&#39;`) in old rows; review the generated file and run it in the Supabase SQL editor. Needs `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in the environment.
 
 ## CI
 

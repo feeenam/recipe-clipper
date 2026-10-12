@@ -97,6 +97,38 @@ function extractJson(text: string): ExtractedRecipe | null {
   }
 }
 
+const HTML_ENTITY_PATTERN = /&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]*);/i
+
+/**
+ * Normalizes a single piece of recipe text. Sites often HTML-encode their JSON-LD (e.g.
+ * "You&#39;ll"), and models occasionally echo entities or tags through, so this decodes
+ * entities, drops stray tags, and collapses whitespace. Deterministic on purpose: an LLM
+ * pass here could silently change amounts or wording.
+ */
+export function cleanText(input: string): string {
+  let text = input
+  // Two passes handles double-encoded text like "&amp;#39;"; more would risk mangling
+  // text that legitimately mentions an entity.
+  for (let pass = 0; pass < 2 && (HTML_ENTITY_PATTERN.test(text) || /<[a-z/!][^>]*>/i.test(text)); pass++) {
+    const { document } = parseHTML(`<!doctype html><html><body><div>${text}</div></body></html>`)
+    text = document.querySelector('div')?.textContent ?? text
+  }
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+export function cleanRecipe(recipe: ExtractedRecipe): ExtractedRecipe {
+  const cleanList = (items: unknown[]) =>
+    items
+      .filter((item): item is string => typeof item === 'string')
+      .map(cleanText)
+      .filter(Boolean)
+  return {
+    title: cleanText(recipe.title),
+    ingredients: cleanList(recipe.ingredients),
+    steps: cleanList(recipe.steps),
+  }
+}
+
 const RECIPE_EXTRACTION_TIMEOUT_MS = 15000
 
 function buildRecipePrompt(articleText: string): string {
@@ -304,6 +336,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         extracted = await extractRecipe(articleText, geminiKey, groqKey)
       }
     }
+
+    // Applies to both the JSON-LD and LLM paths so stored text never carries HTML entities.
+    extracted = cleanRecipe(extracted)
 
     const supabaseUrl = process.env.VITE_SUPABASE_URL!
     const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY!
