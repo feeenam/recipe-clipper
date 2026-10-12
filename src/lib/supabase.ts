@@ -13,4 +13,9 @@ export interface Recipe {
   steps: string[]
   image_url: string | null
   created_at: string
+  // Tags added by the LLM at save time (or the backfill); null / empty until tagged.
+  cuisine: string | null
+  meal_type: string | null
+  main_ingredients: string[]
+  tagged_at: string | null
 }

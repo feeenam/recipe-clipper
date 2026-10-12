@@ -163,7 +163,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   }
 }
 
-export async function callGemini(articleText: string, apiKey: string): Promise<ExtractedRecipe> {
+async function geminiGenerate(prompt: string, apiKey: string, timeoutMs: number): Promise<string> {
   const resp = await fetchWithTimeout(
     'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent',
     {
@@ -173,10 +173,10 @@ export async function callGemini(articleText: string, apiKey: string): Promise<E
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: buildRecipePrompt(articleText) }] }],
+        contents: [{ parts: [{ text: prompt }] }],
       }),
     },
-    RECIPE_EXTRACTION_TIMEOUT_MS
+    timeoutMs
   )
 
   if (!resp.ok) {
@@ -189,15 +189,10 @@ export async function callGemini(articleText: string, apiKey: string): Promise<E
   }
 
   const data = await resp.json()
-  const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-  const extracted = extractJson(text)
-  if (!extracted) {
-    throw new Error('Could not parse a recipe out of that page')
-  }
-  return extracted
+  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
 }
 
-export async function callGroq(articleText: string, apiKey: string): Promise<ExtractedRecipe> {
+async function groqGenerate(prompt: string, apiKey: string, timeoutMs: number): Promise<string> {
   const resp = await fetchWithTimeout(
     'https://api.groq.com/openai/v1/chat/completions',
     {
@@ -208,10 +203,10 @@ export async function callGroq(articleText: string, apiKey: string): Promise<Ext
       },
       body: JSON.stringify({
         model: 'openai/gpt-oss-120b',
-        messages: [{ role: 'user', content: buildRecipePrompt(articleText) }],
+        messages: [{ role: 'user', content: prompt }],
       }),
     },
-    RECIPE_EXTRACTION_TIMEOUT_MS
+    timeoutMs
   )
 
   if (!resp.ok) {
@@ -219,19 +214,14 @@ export async function callGroq(articleText: string, apiKey: string): Promise<Ext
   }
 
   const data = await resp.json()
-  const text: string = data.choices?.[0]?.message?.content ?? ''
-  const extracted = extractJson(text)
-  if (!extracted) {
-    throw new Error('Could not parse a recipe out of that page')
-  }
-  return extracted
+  return data.choices?.[0]?.message?.content ?? ''
 }
 
 /**
- * Extracts a recipe from article text, trying Gemini first and falling back to Groq
- * (a different provider, so this survives a Gemini-wide outage, not just one model)
- * on a timeout, rate limit, or server error. Any other failure (bad request, unparsable
- * response) is assumed to affect the backup the same way, so it's not worth retrying.
+ * Runs a prompt against Gemini first and falls back to Groq (a different provider, so this
+ * survives a Gemini-wide outage, not just one model) on a timeout, rate limit, or server
+ * error. Any other failure (bad request) is assumed to affect the backup the same way, so
+ * it's not worth retrying. Returns the raw model text; callers parse it.
  *
  * NOTE — if this endpoint gets enough traffic to matter: this is a reactive, per-request
  * fallback with no shared state, which is fine at low volume but means every single
@@ -242,15 +232,111 @@ export async function callGroq(articleText: string, apiKey: string): Promise<Ext
  * of being retried on every request. Worth adopting here once volume/latency justifies
  * the added infra.
  */
-export async function extractRecipe(articleText: string, geminiKey: string, groqKey?: string): Promise<ExtractedRecipe> {
+export async function generateWithFallback(
+  prompt: string,
+  geminiKey: string,
+  groqKey?: string,
+  timeoutMs: number = RECIPE_EXTRACTION_TIMEOUT_MS
+): Promise<string> {
   try {
-    return await callGemini(articleText, geminiKey)
+    return await geminiGenerate(prompt, geminiKey, timeoutMs)
   } catch (err) {
     if (!(err instanceof RetryableLlmError) || !groqKey) {
       throw err
     }
     console.error('llm_fallback_used: Gemini failed, retrying with Groq:', err.message)
-    return await callGroq(articleText, groqKey)
+    return await groqGenerate(prompt, groqKey, timeoutMs)
+  }
+}
+
+/** Extracts a recipe from article text. An unparsable response is not retried on the backup. */
+export async function extractRecipe(articleText: string, geminiKey: string, groqKey?: string): Promise<ExtractedRecipe> {
+  const text = await generateWithFallback(buildRecipePrompt(articleText), geminiKey, groqKey)
+  const extracted = extractJson(text)
+  if (!extracted) {
+    throw new Error('Could not parse a recipe out of that page')
+  }
+  return extracted
+}
+
+// ---- Recipe tags (cuisine / meal type / main ingredients) -----------------------------
+// Fixed lists keep filtering consistent; the model is told to pick from them and anything
+// else is normalized below.
+export const CUISINES = [
+  'american', 'british', 'caribbean', 'chinese', 'ethiopian', 'filipino', 'french', 'german',
+  'greek', 'indian', 'indonesian', 'italian', 'japanese', 'korean', 'latin american', 'lebanese',
+  'mediterranean', 'mexican', 'middle eastern', 'moroccan', 'nordic', 'russian', 'spanish',
+  'thai', 'turkish', 'vietnamese', 'other',
+]
+export const MEAL_TYPES = ['breakfast', 'main', 'side', 'soup', 'salad', 'dessert', 'snack', 'drink']
+
+const TAGGING_TIMEOUT_MS = 10000
+const MAX_MAIN_INGREDIENTS = 3
+
+export interface RecipeTags {
+  cuisine: string | null
+  meal_type: string | null
+  main_ingredients: string[]
+}
+
+export const UNTAGGED: RecipeTags = { cuisine: null, meal_type: null, main_ingredients: [] }
+
+export function hasTags(tags: RecipeTags): boolean {
+  return tags.cuisine !== null || tags.meal_type !== null || tags.main_ingredients.length > 0
+}
+
+/** Coerces untrusted model output into valid tags; anything unusable becomes null / empty. */
+export function normalizeTags(raw: unknown): RecipeTags {
+  if (!raw || typeof raw !== 'object') return { ...UNTAGGED, main_ingredients: [] }
+  const obj = raw as Record<string, unknown>
+  const lower = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase().replace(/\s+/g, ' ') : '')
+
+  const cuisineText = lower(obj.cuisine)
+  // A non-empty cuisine we don't recognise is still information ("other"), unlike no answer.
+  const cuisine = !cuisineText ? null : CUISINES.includes(cuisineText) ? cuisineText : 'other'
+
+  const mealText = lower(obj.meal_type)
+  const meal_type = MEAL_TYPES.includes(mealText) ? mealText : null
+
+  const ingredients = Array.isArray(obj.main_ingredients) ? obj.main_ingredients : []
+  const main_ingredients = Array.from(new Set(ingredients.map(lower).filter((i) => i && i.length <= 40))).slice(
+    0,
+    MAX_MAIN_INGREDIENTS
+  )
+
+  return { cuisine, meal_type, main_ingredients }
+}
+
+function buildTagPrompt(recipe: ExtractedRecipe): string {
+  return `You are labeling a recipe so it can be filtered in a recipe library. Return ONLY strict JSON, no markdown fences, in this exact shape:
+{"cuisine": "...", "meal_type": "...", "main_ingredients": ["...", "..."]}
+
+Rules:
+- cuisine: exactly one of: ${CUISINES.join(', ')}. Use "other" if none fit.
+- meal_type: exactly one of: ${MEAL_TYPES.join(', ')}.
+- main_ingredients: 1 to ${MAX_MAIN_INGREDIENTS} headline ingredients that define the dish (e.g. "chicken", "salmon", "leek"). Lowercase, singular, ingredient name only: no amounts, no preparation words, and no pantry staples (salt, oil, water, sugar, pepper) unless the dish is built around them.
+
+Recipe title: ${recipe.title}
+Ingredients:
+${recipe.ingredients
+  .slice(0, 40)
+  .map((i) => `- ${i}`)
+  .join('\n')}`
+}
+
+/**
+ * Best-effort: never throws. Any LLM or parse failure returns "untagged" so a tagging
+ * problem can't block saving a recipe (the backfill script can fill the tags in later).
+ */
+export async function tagRecipe(recipe: ExtractedRecipe, geminiKey: string, groqKey?: string): Promise<RecipeTags> {
+  try {
+    const text = await generateWithFallback(buildTagPrompt(recipe), geminiKey, groqKey, TAGGING_TIMEOUT_MS)
+    const match = text.match(/\{[\s\S]*\}/)
+    if (!match) return { ...UNTAGGED, main_ingredients: [] }
+    return normalizeTags(JSON.parse(match[0]))
+  } catch (err) {
+    console.error('recipe_tagging_failed:', err instanceof Error ? err.message : err)
+    return { ...UNTAGGED, main_ingredients: [] }
   }
 }
 
@@ -344,9 +430,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY!
     const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
-    // Best-effort — a failed image generation shouldn't fail the whole save.
+    // Best-effort — a failed image generation or tagging call shouldn't fail the whole save.
+    // They run concurrently (image generation is the slow part), so tagging adds no latency.
     let imageUrl: string | null = null
-    const image = await generateDishImage(extracted.title, extracted.ingredients)
+    const [image, tags] = await Promise.all([
+      generateDishImage(extracted.title, extracted.ingredients),
+      tagRecipe(extracted, geminiKey, groqKey),
+    ])
     if (image) {
       const ext = image.mimeType.split('/')[1] || 'png'
       const path = `${randomUUID()}.${ext}`
@@ -368,6 +458,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ingredients: extracted.ingredients,
         steps: extracted.steps,
         image_url: imageUrl,
+        cuisine: tags.cuisine,
+        meal_type: tags.meal_type,
+        main_ingredients: tags.main_ingredients,
+        // Left null when tagging failed so the backfill script knows to retry this recipe.
+        tagged_at: hasTags(tags) ? new Date().toISOString() : null,
       })
       .select()
       .single()
