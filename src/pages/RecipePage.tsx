@@ -4,6 +4,17 @@ import { supabase, type Recipe } from '../lib/supabase'
 import { useWakeLock } from '../lib/useWakeLock'
 import { useVoiceAssistant } from '../lib/useVoiceAssistant'
 
+function TagLink({ param, value }: { param: 'cuisine' | 'meal' | 'ingredient'; value: string }) {
+  return (
+    <Link
+      to={`/?${param}=${encodeURIComponent(value)}`}
+      className="text-xs px-2.5 py-1 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200"
+    >
+      {value.charAt(0).toUpperCase() + value.slice(1)}
+    </Link>
+  )
+}
+
 export function RecipePage() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -148,6 +159,16 @@ export function RecipePage() {
           >
             {recipe.url}
           </a>
+        )}
+
+        {(recipe.cuisine || recipe.meal_type || recipe.main_ingredients?.length > 0) && (
+          <div className="flex flex-wrap gap-1.5 mt-4">
+            {recipe.cuisine && <TagLink param="cuisine" value={recipe.cuisine} />}
+            {recipe.meal_type && <TagLink param="meal" value={recipe.meal_type} />}
+            {recipe.main_ingredients?.map((ingredient) => (
+              <TagLink key={ingredient} param="ingredient" value={ingredient} />
+            ))}
+          </div>
         )}
 
         <div className="mt-10">
