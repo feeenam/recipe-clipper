@@ -11,10 +11,11 @@ export function LoginPage() {
   const navigate = useNavigate()
   const { session, loading, isAnonymous } = useAuth()
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [captchaToken, setCaptchaToken] = useState<string | null>(null)
   const [captchaReset, setCaptchaReset] = useState(0)
-  const [busy, setBusy] = useState<'link' | 'trial' | null>(null)
-  const [sent, setSent] = useState(false)
+  const [busy, setBusy] = useState<'password' | 'reset' | 'trial' | null>(null)
+  const [resetSent, setResetSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Already signed in with a real account: nothing to do here. A trial session can still sign in.
@@ -27,29 +28,44 @@ export function LoginPage() {
     setBusy(null)
   }
 
-  async function handleMagicLink(e: React.FormEvent) {
+  async function handlePasswordSignIn(e: React.FormEvent) {
     e.preventDefault()
     if (!captchaToken) return
-    setBusy('link')
+    setBusy('password')
     setError(null)
-    const { error: authError } = await supabase.auth.signInWithOtp({
+    const { error: authError } = await supabase.auth.signInWithPassword({
       email: email.trim(),
-      options: {
-        // Invite-only: an email that hasn't been invited gets an error instead of an account.
-        shouldCreateUser: false,
-        emailRedirectTo: window.location.origin,
-        captchaToken,
-      },
+      password,
+      options: { captchaToken },
     })
     if (authError) {
       setError(
-        authError.code === 'otp_disabled' || /signups not allowed/i.test(authError.message)
-          ? "That email hasn't been invited yet."
+        authError.code === 'invalid_credentials' || /invalid login credentials/i.test(authError.message)
+          ? 'Wrong email or password.'
           : authError.message
       )
-    } else {
-      setSent(true)
+      finishAttempt()
+      return
     }
+    navigate('/')
+  }
+
+  // Also the way to set a first password: invited users don't have one yet. The link in the
+  // email signs them in and the app then asks for a new password (see SetPasswordPage).
+  async function handleReset() {
+    if (!email.trim()) {
+      setError('Enter your email first.')
+      return
+    }
+    if (!captchaToken) return
+    setBusy('reset')
+    setError(null)
+    const { error: authError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin,
+      captchaToken,
+    })
+    if (authError) setError(authError.message)
+    else setResetSent(true)
     finishAttempt()
   }
 
@@ -72,13 +88,14 @@ export function LoginPage() {
         <h1 className="text-3xl font-semibold text-gray-900 mb-2">Recipe Clipper</h1>
         <p className="text-gray-500 mb-8">Sign in to see your recipes.</p>
 
-        {sent ? (
+        {resetSent ? (
           <p className="text-gray-700">
-            Check <span className="font-medium">{email}</span> for a sign-in link. You can close this tab.
+            If <span className="font-medium">{email}</span> has an account, we've emailed a link to set your password.
+            You can close this tab.
           </p>
         ) : (
           <>
-            <form onSubmit={handleMagicLink} className="flex flex-col gap-3">
+            <form onSubmit={handlePasswordSignIn} className="flex flex-col gap-3">
               <input
                 type="email"
                 required
@@ -88,15 +105,32 @@ export function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 className="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-gray-900"
               />
+              <input
+                type="password"
+                required
+                autoComplete="current-password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-gray-900"
+              />
               <Turnstile onToken={setCaptchaToken} resetKey={captchaReset} />
               <button
                 type="submit"
                 disabled={!captchaToken || busy !== null}
                 className="bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white font-medium px-5 py-3 rounded-lg"
               >
-                {busy === 'link' ? 'Sending…' : 'Email me a sign-in link'}
+                {busy === 'password' ? 'Signing in…' : 'Sign in'}
               </button>
             </form>
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={!captchaToken || busy !== null}
+              className="text-gray-500 hover:text-gray-700 disabled:opacity-50 text-sm mt-3 underline"
+            >
+              {busy === 'reset' ? 'Sending…' : 'Forgot your password, or first time here? Email me a link to set one'}
+            </button>
             {error && <p className="text-red-600 text-sm mt-3">{error}</p>}
 
             <div className="mt-10 pt-6 border-t border-gray-200">

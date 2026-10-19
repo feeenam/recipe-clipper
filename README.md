@@ -65,7 +65,7 @@ Run the SQL in `supabase-schema.sql` in your Supabase project once to create the
 
 ## Accounts
 
-Recipes belong to a user and are private by default. Sign-in is a magic link, accounts are invite-only, and visitors can try saving one recipe through an anonymous trial (no image, one per user, capped per IP per day). A recipe's owner can set it to "anyone with the link" from its page. The voice assistant is admin-only (`/admin` login).
+Recipes belong to a user and are private by default. Sign-in is email and password (Supabase Auth stores the passwords, hashed), accounts are invite-only, and visitors can try saving one recipe through an anonymous trial (no image, one per user, capped per IP per day). A recipe's owner can set it to "anyone with the link" from its page. The voice assistant is admin-only (`/admin` login).
 
 One-time setup, in this order:
 
@@ -74,7 +74,7 @@ One-time setup, in this order:
    - Sign In / Providers: turn **off** "Allow new users to sign up", turn **on** "Allow anonymous sign-ins".
    - Attack Protection: enable CAPTCHA, provider Turnstile, paste the **secret** key.
    - URL Configuration: set the Site URL to your production URL and add redirect URLs for it, `http://localhost:5173` and, if you test on previews, `https://*.vercel.app`.
-3. **Invite yourself:** Authentication > Users > Invite user, open the email link once so the account exists. Invite anyone else the same way.
+3. **Invite yourself:** Authentication > Users > Invite user, open the email link once so the account exists. Invite anyone else the same way. Invited users have no password yet: on the login page they use "Forgot your password, or first time here?" to get an email link, which asks them to choose one. Consider raising the minimum password length (Authentication > Sign In / Providers > Email); the app itself requires 8.
 4. **Migration:** run the "User accounts" block at the bottom of `supabase-schema.sql` (set `owner_email` to your email first). It gives all existing recipes to that user and drops the public policies, so the old deployed code stops working until the new code is live: run it and deploy together.
 5. Set `VITE_TURNSTILE_SITE_KEY` (and optionally `VITE_INVITE_EMAIL`) in Vercel, then deploy.
 
