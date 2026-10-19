@@ -57,16 +57,33 @@ Environment variables:
 | `GEMINI_API_KEY` | `extract-recipe`, admin status |
 | `GROQ_API_KEY` | `extract-recipe` fallback, `voice-assistant`, admin status |
 | `ADMIN_PASSWORD` | `/admin` login, admin-only delete |
-| `SUPABASE_SERVICE_ROLE_KEY` | `delete-recipe` (server-only; never expose to the browser) |
+| `SUPABASE_SERVICE_ROLE_KEY` | `delete-recipe` and the local backfill scripts (server-only; never expose to the browser) |
+| `VITE_TURNSTILE_SITE_KEY` | login page bot check (the secret key lives in Supabase, not here) |
+| `VITE_INVITE_EMAIL` | optional "Request an invite" link on the login page |
 
 Run the SQL in `supabase-schema.sql` in your Supabase project once to create the tables and bucket. When upgrading an existing project, run only the newer blocks (the recipe-tags migration at the bottom) **before** deploying code that uses them.
+
+## Accounts
+
+Recipes belong to a user and are private by default. Sign-in is a magic link, accounts are invite-only, and visitors can try saving one recipe through an anonymous trial (no image, one per user, capped per IP per day). A recipe's owner can set it to "anyone with the link" from its page. The voice assistant is admin-only (`/admin` login).
+
+One-time setup, in this order:
+
+1. **Cloudflare Turnstile:** create a widget for your production hostname and `localhost`. Put the site key in `VITE_TURNSTILE_SITE_KEY` (`.env.local` and Vercel).
+2. **Supabase > Authentication:**
+   - Sign In / Providers: turn **off** "Allow new users to sign up", turn **on** "Allow anonymous sign-ins".
+   - Attack Protection: enable CAPTCHA, provider Turnstile, paste the **secret** key.
+   - URL Configuration: set the Site URL to your production URL and add redirect URLs for it, `http://localhost:5173` and, if you test on previews, `https://*.vercel.app`.
+3. **Invite yourself:** Authentication > Users > Invite user, open the email link once so the account exists. Invite anyone else the same way.
+4. **Migration:** run the "User accounts" block at the bottom of `supabase-schema.sql` (set `owner_email` to your email first). It gives all existing recipes to that user and drops the public policies, so the old deployed code stops working until the new code is live: run it and deploy together.
+5. Set `VITE_TURNSTILE_SITE_KEY` (and optionally `VITE_INVITE_EMAIL`) in Vercel, then deploy.
 
 ## Scripts
 
 - `npm run dev` start the dev server
 - `npm run build` typecheck and build
 - `npm run typecheck` TypeScript only
-- `node scripts/backfill-clean-recipes.ts` reads saved recipes and writes SQL to decode HTML entities (e.g. `&#39;`) in old rows; review the generated file and run it in the Supabase SQL editor. Needs `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in the environment.
+- `node scripts/backfill-clean-recipes.ts` reads saved recipes and writes SQL to decode HTML entities (e.g. `&#39;`) in old rows; review the generated file and run it in the Supabase SQL editor. Needs `VITE_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in the environment (recipes are private per user, so it reads with the service role).
 - `node scripts/backfill-recipe-tags.ts` tags recipes that have no tags yet (`--all` re-tags everything) and writes SQL to review and run in the Supabase SQL editor. Additionally needs `GEMINI_API_KEY` (optional `GROQ_API_KEY`).
 
 ## CI

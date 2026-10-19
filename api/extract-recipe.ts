@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
 import { Readability } from '@mozilla/readability'
 import { parseHTML } from 'linkedom'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 interface ExtractedRecipe {
   title: string
@@ -366,10 +366,35 @@ async function generateDishImage(title: string, ingredients: string[]): Promise<
   }
 }
 
+/** Hash of the caller's IP, for the per-IP trial cap. Vercel sets x-forwarded-for itself. */
+function clientIpHash(req: VercelRequest): string {
+  const forwarded = req.headers['x-forwarded-for']
+  const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim()
+  return createHash('sha256').update(first || req.socket?.remoteAddress || 'unknown').digest('hex')
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
+
+  const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim()
+  if (!token) {
+    return res.status(401).json({ error: 'Sign in to save recipes' })
+  }
+
+  // Acts as the signed-in user: RLS, not this code, decides what they may read and write.
+  const supabase = createClient(process.env.VITE_SUPABASE_URL!, process.env.VITE_SUPABASE_ANON_KEY!, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+  const { data: userData, error: userError } = await supabase.auth.getUser(token)
+  const user = userData.user
+  if (userError || !user) {
+    return res.status(401).json({ error: 'Your session expired. Sign in again.' })
+  }
+  // Trial users (anonymous sign-in) get one recipe and no generated image.
+  const isTrial = user.is_anonymous === true
 
   const { url, text } = req.body ?? {}
   const pastedText = typeof text === 'string' ? text.trim() : ''
@@ -390,6 +415,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'GEMINI_API_KEY not configured' })
   }
   const groqKey = process.env.GROQ_API_KEY
+
+  // Trial limits are checked before any LLM or page fetch so a refused request costs nothing.
+  if (isTrial) {
+    const { count } = await supabase
+      .from('recipes')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+    if ((count ?? 0) >= 1) {
+      return res.status(403).json({ error: 'Your trial recipe is used. Sign in to save more.' })
+    }
+    const { data: allowed, error: claimError } = await supabase.rpc('claim_trial_clip', {
+      p_ip_hash: clientIpHash(req),
+    })
+    if (claimError) {
+      return res.status(500).json({ error: claimError.message })
+    }
+    if (!allowed) {
+      return res.status(429).json({ error: 'Too many trial recipes from your network today. Try again tomorrow.' })
+    }
+  }
 
   try {
     let extracted: ExtractedRecipe | null = null
@@ -426,20 +471,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Applies to both the JSON-LD and LLM paths so stored text never carries HTML entities.
     extracted = cleanRecipe(extracted)
 
-    const supabaseUrl = process.env.VITE_SUPABASE_URL!
-    const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY!
-    const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
     // Best-effort — a failed image generation or tagging call shouldn't fail the whole save.
     // They run concurrently (image generation is the slow part), so tagging adds no latency.
+    // Trial recipes skip the image entirely, so they never touch storage.
     let imageUrl: string | null = null
     const [image, tags] = await Promise.all([
-      generateDishImage(extracted.title, extracted.ingredients),
+      isTrial ? Promise.resolve(null) : generateDishImage(extracted.title, extracted.ingredients),
       tagRecipe(extracted, geminiKey, groqKey),
     ])
     if (image) {
       const ext = image.mimeType.split('/')[1] || 'png'
-      const path = `${randomUUID()}.${ext}`
+      // Per-user folder: the storage policy only lets users upload under their own id.
+      const path = `${user.id}/${randomUUID()}.${ext}`
       const { error: uploadError } = await supabase.storage
         .from('recipe-images')
         .upload(path, image.data, { contentType: image.mimeType })
@@ -453,6 +496,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data, error } = await supabase
       .from('recipes')
       .insert({
+        user_id: user.id,
         url: parsedUrl ? parsedUrl.toString() : '',
         title: extracted.title,
         ingredients: extracted.ingredients,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase, type Recipe } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
 
 const PAGE_SIZE = 10
 
@@ -62,6 +63,8 @@ function FilterSelect({
 
 export function HomePage() {
   const navigate = useNavigate()
+  const { session, isAnonymous } = useAuth()
+  const userId = session?.user.id
   const [searchParams, setSearchParams] = useSearchParams()
   const [url, setUrl] = useState('')
   const [text, setText] = useState('')
@@ -86,11 +89,13 @@ export function HomePage() {
   const page = Math.min(requestedPage, totalPages)
 
   useEffect(() => {
+    if (!userId) return
     let cancelled = false
     setRecipesLoading(true)
     const from = (requestedPage - 1) * PAGE_SIZE
-    // Filtering is done by the database so pagination and the total stay correct.
-    let query = supabase.from('recipes').select('*', { count: 'exact' })
+    // Filtering is done by the database so pagination and the total stay correct. RLS also lets
+    // us read other people's shared recipes, so the library must filter to our own explicitly.
+    let query = supabase.from('recipes').select('*', { count: 'exact' }).eq('user_id', userId)
     if (cuisineFilter) query = query.eq('cuisine', cuisineFilter)
     if (mealFilter) query = query.eq('meal_type', mealFilter)
     if (ingredientFilter) query = query.contains('main_ingredients', [ingredientFilter])
@@ -107,14 +112,16 @@ export function HomePage() {
     return () => {
       cancelled = true
     }
-  }, [requestedPage, cuisineFilter, mealFilter, ingredientFilter, sort])
+  }, [userId, requestedPage, cuisineFilter, mealFilter, ingredientFilter, sort])
 
   // Options for the filter dropdowns, built from what's actually saved (most common first).
   // One lightweight query; fine at personal-library scale.
   useEffect(() => {
+    if (!userId) return
     supabase
       .from('recipes')
       .select('cuisine, meal_type, main_ingredients')
+      .eq('user_id', userId)
       .then(({ data }) => {
         const rows = data ?? []
         setFacets({
@@ -123,7 +130,7 @@ export function HomePage() {
           ingredient: countValues(rows.flatMap((r) => (r.main_ingredients as string[] | null) ?? [])),
         })
       })
-  }, [])
+  }, [userId])
 
   // If the URL points past the last page (e.g. recipes were removed), snap back to it.
   useEffect(() => {
@@ -161,9 +168,17 @@ export function HomePage() {
     setError(null)
 
     try {
+      // The API acts as the signed-in user, so it needs the current access token.
+      const {
+        data: { session: current },
+      } = await supabase.auth.getSession()
+      if (!current) {
+        navigate('/login')
+        return
+      }
       const res = await fetch('/api/extract-recipe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${current.access_token}` },
         body: JSON.stringify(pasteMode ? { text, url } : { url }),
       })
       const data = await res.json()
@@ -186,12 +201,31 @@ export function HomePage() {
     }
   }
 
+  async function handleSignOut() {
+    await supabase.auth.signOut()
+    navigate('/login')
+  }
+
+  // A trial user gets exactly one recipe; the database enforces it, this just explains it.
+  const trialUsed = isAnonymous && !recipesLoading && totalCount >= 1
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center px-4 py-16">
       <div className="w-full max-w-xl">
+        <div className="flex justify-end mb-4 text-sm text-gray-400">
+          {isAnonymous && <span className="mr-3">Trial</span>}
+          <button type="button" onClick={handleSignOut} className="hover:text-gray-600 underline">
+            {isAnonymous ? 'Sign in' : 'Sign out'}
+          </button>
+        </div>
         <h1 className="text-3xl font-semibold text-gray-900 mb-2">Recipe Clipper</h1>
         <p className="text-gray-500 mb-8">Paste a recipe URL. Get just the ingredients and steps.</p>
 
+        {trialUsed ? (
+          <p className="text-gray-600 text-sm border border-gray-200 bg-white rounded-lg px-4 py-3 mb-8">
+            You've used your trial recipe. Accounts are invite-only, so sign in to save more.
+          </p>
+        ) : (
         <form onSubmit={handleSubmit} className="mb-2">
           {pasteMode ? (
             <div className="flex flex-col gap-2">
@@ -238,16 +272,19 @@ export function HomePage() {
             </div>
           )}
         </form>
-        <button
-          type="button"
-          onClick={() => {
-            setPasteMode((v) => !v)
-            setError(null)
-          }}
-          className="text-gray-400 hover:text-gray-600 text-sm mb-8 underline"
-        >
-          {pasteMode ? 'Paste a URL instead' : "Site blocking us? Paste the recipe text instead"}
-        </button>
+        )}
+        {!trialUsed && (
+          <button
+            type="button"
+            onClick={() => {
+              setPasteMode((v) => !v)
+              setError(null)
+            }}
+            className="text-gray-400 hover:text-gray-600 text-sm mb-8 underline"
+          >
+            {pasteMode ? 'Paste a URL instead' : "Site blocking us? Paste the recipe text instead"}
+          </button>
+        )}
         {error && <p className="text-red-600 text-sm mb-8">{error}</p>}
 
         <div className="mt-12">

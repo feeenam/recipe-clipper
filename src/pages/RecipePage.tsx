@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { supabase, type Recipe } from '../lib/supabase'
 import { useWakeLock } from '../lib/useWakeLock'
 import { useVoiceAssistant } from '../lib/useVoiceAssistant'
+import { useAuth } from '../lib/auth'
 
 function TagLink({ param, value }: { param: 'cuisine' | 'meal' | 'ingredient'; value: string }) {
   return (
@@ -18,11 +19,16 @@ function TagLink({ param, value }: { param: 'cuisine' | 'meal' | 'ingredient'; v
 export function RecipePage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { session, isAnonymous } = useAuth()
   const [recipe, setRecipe] = useState<Recipe | null>(null)
   const [loading, setLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [sharing, setSharing] = useState(false)
+  const [shareError, setShareError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const isOwner = !!session && !!recipe && recipe.user_id === session.user.id
   const { isActive: keepAwake, isSupported: wakeLockSupported, toggle: toggleWakeLock } = useWakeLock()
   const {
     isSupported: voiceSupported,
@@ -52,6 +58,32 @@ export function RecipePage() {
       .catch(() => setIsAdmin(false))
   }, [])
 
+  // Only the owner can change this (RLS enforces it); trial users can't share at all.
+  async function setVisibility(next: 'private' | 'public') {
+    if (!recipe || sharing) return
+    setSharing(true)
+    setShareError(null)
+    const { data, error } = await supabase
+      .from('recipes')
+      .update({ visibility: next })
+      .eq('id', recipe.id)
+      .select()
+      .single()
+    if (error || !data) setShareError(error?.message ?? 'Could not update sharing')
+    else setRecipe(data)
+    setSharing(false)
+  }
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setShareError('Could not copy the link')
+    }
+  }
+
   async function handleDelete() {
     if (!recipe || deleting) return
     if (!window.confirm(`Delete "${recipe.title}"? This can't be undone.`)) return
@@ -61,12 +93,16 @@ export function RecipePage() {
     try {
       const res = await fetch('/api/delete-recipe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // The server accepts the admin cookie or the owner's access token.
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
         body: JSON.stringify({ id: recipe.id }),
       })
       if (res.status === 401) {
         setIsAdmin(false)
-        throw new Error('Admin session expired. Log in again at /admin.')
+        throw new Error(isOwner ? 'Your session expired. Sign in again.' : 'Admin session expired. Log in again at /admin.')
       }
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -96,10 +132,14 @@ export function RecipePage() {
     <div className="min-h-screen bg-gray-50 flex flex-col items-center px-4 py-16">
       <div className="w-full max-w-xl">
         <div className="flex items-center justify-between mb-6">
-          <Link to="/" className="text-gray-400 hover:text-gray-600 text-sm inline-block">&larr; All recipes</Link>
+          {session ? (
+            <Link to="/" className="text-gray-400 hover:text-gray-600 text-sm inline-block">&larr; All recipes</Link>
+          ) : (
+            <Link to="/login" className="text-gray-400 hover:text-gray-600 text-sm inline-block">Sign in</Link>
+          )}
 
           <div className="flex items-center gap-2">
-            {voiceSupported && (
+            {voiceSupported && isAdmin && (
               <button
                 onClick={toggleVoiceAssistant}
                 className={`text-sm px-3 py-1.5 rounded-full border transition-colors ${
@@ -128,7 +168,7 @@ export function RecipePage() {
               </button>
             )}
 
-            {isAdmin && (
+            {(isAdmin || isOwner) && (
               <button
                 onClick={handleDelete}
                 disabled={deleting}
@@ -171,6 +211,25 @@ export function RecipePage() {
           </div>
         )}
 
+        {isOwner && !isAnonymous && (
+          <div className="flex flex-wrap items-center gap-2 mt-4">
+            <button
+              onClick={() => setVisibility(recipe.visibility === 'public' ? 'private' : 'public')}
+              disabled={sharing}
+              title={recipe.visibility === 'public' ? 'Click to make private' : 'Click to share with anyone who has the link'}
+              className="text-sm px-3 py-1.5 rounded-full border border-gray-300 bg-white text-gray-600 hover:border-gray-400 disabled:opacity-50"
+            >
+              {recipe.visibility === 'public' ? '🔗 Anyone with the link' : '🔒 Private'}
+            </button>
+            {recipe.visibility === 'public' && (
+              <button onClick={copyLink} className="text-sm text-gray-500 hover:text-gray-700 underline">
+                {copied ? 'Copied' : 'Copy link'}
+              </button>
+            )}
+            {shareError && <span className="text-red-600 text-xs">{shareError}</span>}
+          </div>
+        )}
+
         <div className="mt-10">
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Ingredients</h2>
           <ul className="space-y-2">
@@ -196,6 +255,15 @@ export function RecipePage() {
             ))}
           </ol>
         </div>
+
+        {!session && (
+          <div className="mt-12 pt-6 border-t border-gray-200 text-sm text-gray-500">
+            Want to keep your own recipes?{' '}
+            <Link to="/login" className="text-gray-900 underline">
+              Clip your own
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   )

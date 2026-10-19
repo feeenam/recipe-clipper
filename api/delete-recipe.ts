@@ -2,10 +2,11 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 
-// Admin-only. The `recipes` table has no delete policy for the anon key on purpose, so this
-// uses the service-role key (server-side only, never a VITE_ var) after checking the same
-// admin session cookie as admin-status.ts. The auth helpers are duplicated rather than shared
-// for the bundler reason explained in admin-login.ts.
+// Deletes a recipe (and its image) for either the admin (session cookie, same check as
+// admin-status.ts) or the recipe's owner (Supabase bearer token). It uses the service-role key
+// (server-side only, never a VITE_ var) because removing the storage image needs it; ownership
+// is checked here before anything is deleted. The auth helpers are duplicated rather than
+// shared for the bundler reason explained in admin-login.ts.
 const ADMIN_COOKIE_NAME = 'admin_session'
 const RECIPE_IMAGES_BUCKET = 'recipe-images'
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -62,7 +63,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  if (!isAuthedRequest(req)) {
+  const isAdmin = isAuthedRequest(req)
+  const bearer = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim()
+  if (!isAdmin && !bearer) {
     return res.status(401).json({ error: 'Not authenticated' })
   }
 
@@ -78,15 +81,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const supabase = createClient(supabaseUrl, serviceRoleKey)
 
+  let userId: string | null = null
+  if (!isAdmin) {
+    const { data: userData, error: userError } = await supabase.auth.getUser(bearer)
+    userId = userError ? null : (userData.user?.id ?? null)
+    if (!userId) {
+      return res.status(401).json({ error: 'Not authenticated' })
+    }
+  }
+
   const { data: recipe, error: lookupError } = await supabase
     .from('recipes')
-    .select('id, image_url')
+    .select('id, image_url, user_id')
     .eq('id', id)
     .maybeSingle()
   if (lookupError) {
     return res.status(500).json({ error: lookupError.message })
   }
-  if (!recipe) {
+  // Someone else's recipe looks the same as a missing one, so ids can't be probed.
+  if (!recipe || (!isAdmin && recipe.user_id !== userId)) {
     return res.status(404).json({ error: 'Recipe not found' })
   }
 
