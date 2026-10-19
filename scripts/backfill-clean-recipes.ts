@@ -1,25 +1,26 @@
 // One-off backfill: decodes HTML entities / strips stray tags in already-saved recipes.
 //
-// The anon key can only read `recipes` (no update policy), so this does NOT write to the
-// database. It writes a SQL file of UPDATEs for only the rows that would change, which you
+// Recipes are private per user, so this reads every user's rows with the service-role key
+// (local use only: keep it in .env.local, never in the browser or a VITE_ var). It does NOT
+// write to the database. It writes a SQL file of UPDATEs for only the rows that would change, which you
 // review and run in the Supabase SQL editor.
 //
 // Usage (Node 22.6+):
-//   VITE_SUPABASE_URL=https://xxxx.supabase.co VITE_SUPABASE_ANON_KEY=... \
+//   VITE_SUPABASE_URL=https://xxxx.supabase.co SUPABASE_SERVICE_ROLE_KEY=... \
 //     node scripts/backfill-clean-recipes.ts [output.sql]
 import { createClient } from '@supabase/supabase-js'
 import { writeFileSync } from 'node:fs'
 import { cleanRecipe } from '../api/extract-recipe.ts'
 
 const url = process.env.VITE_SUPABASE_URL
-const anonKey = process.env.VITE_SUPABASE_ANON_KEY
-if (!url || !anonKey) {
-  console.error('Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY')
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+if (!url || !serviceRoleKey) {
+  console.error('Set VITE_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY')
   process.exit(1)
 }
 const outFile = process.argv[2] ?? 'backfill-clean-recipes.sql'
 
-const supabase = createClient(url, anonKey)
+const supabase = createClient(url, serviceRoleKey)
 const PAGE = 500
 
 interface Row {

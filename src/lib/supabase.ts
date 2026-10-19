@@ -18,4 +18,7 @@ export interface Recipe {
   meal_type: string | null
   main_ingredients: string[]
   tagged_at: string | null
+  // Owner, and whether anyone with the link can read it ('private' = owner only).
+  user_id: string
+  visibility: 'private' | 'public'
 }

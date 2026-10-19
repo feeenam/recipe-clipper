@@ -1,13 +1,14 @@
 // One-off backfill: tags already-saved recipes (cuisine / meal type / main ingredients).
 //
-// Like backfill-clean-recipes.ts, this does NOT write to the database: the anon key has no
-// update policy on `recipes`. It reads untagged recipes, asks the LLM for tags, and writes
+// Like backfill-clean-recipes.ts, this does NOT write to the database: recipes are private per
+// user, so it reads every user's rows with the service-role key (local use only: keep it in
+// .env.local, never in the browser or a VITE_ var), and the SQL it writes is run by hand. It reads untagged recipes, asks the LLM for tags, and writes
 // a SQL file of UPDATEs for you to review and run in the Supabase SQL editor.
 //
 // Run the tag migration in supabase-schema.sql first.
 //
 // Usage (Node 22.6+):
-//   VITE_SUPABASE_URL=https://xxxx.supabase.co VITE_SUPABASE_ANON_KEY=... \
+//   VITE_SUPABASE_URL=https://xxxx.supabase.co SUPABASE_SERVICE_ROLE_KEY=... \
 //   GEMINI_API_KEY=... [GROQ_API_KEY=...] \
 //     node scripts/backfill-recipe-tags.ts [output.sql] [--all]
 //
@@ -17,11 +18,11 @@ import { writeFileSync } from 'node:fs'
 import { hasTags, tagRecipe, type RecipeTags } from '../api/extract-recipe.ts'
 
 const url = process.env.VITE_SUPABASE_URL
-const anonKey = process.env.VITE_SUPABASE_ANON_KEY
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 const geminiKey = process.env.GEMINI_API_KEY
 const groqKey = process.env.GROQ_API_KEY
-if (!url || !anonKey || !geminiKey) {
-  console.error('Set VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY and GEMINI_API_KEY (GROQ_API_KEY is optional)')
+if (!url || !serviceRoleKey || !geminiKey) {
+  console.error('Set VITE_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and GEMINI_API_KEY (GROQ_API_KEY is optional)')
   process.exit(1)
 }
 const args = process.argv.slice(2)
@@ -32,7 +33,7 @@ const outFile = args.find((a) => !a.startsWith('--')) ?? 'backfill-recipe-tags.s
 const DELAY_BETWEEN_CALLS_MS = Number(process.env.TAG_DELAY_MS ?? 2000)
 const PAGE = 500
 
-const supabase = createClient(url, anonKey)
+const supabase = createClient(url, serviceRoleKey)
 
 interface Row {
   id: string

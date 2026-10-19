@@ -1,4 +1,40 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { createHash, timingSafeEqual } from 'node:crypto'
+
+// Admin-only for now: every call spends Groq quota, so it's limited to the admin session
+// cookie (same check as admin-status.ts / delete-recipe.ts). The helpers are duplicated rather
+// than shared for the bundler reason explained in admin-login.ts.
+const ADMIN_COOKIE_NAME = 'admin_session'
+
+function hashPassword(password: string): string {
+  return createHash('sha256').update(password).digest('hex')
+}
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  if (!header) return {}
+  const cookies: Record<string, string> = {}
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=')
+    if (idx === -1) continue
+    try {
+      cookies[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim())
+    } catch {
+      // Ignore cookies with malformed encoding.
+    }
+  }
+  return cookies
+}
+
+function isAuthedRequest(req: VercelRequest): boolean {
+  const expected = process.env.ADMIN_PASSWORD
+  if (!expected) return false
+  const sessionToken = parseCookies(req.headers.cookie)[ADMIN_COOKIE_NAME]
+  if (!sessionToken) return false
+  const a = Buffer.from(sessionToken)
+  const b = Buffer.from(hashPassword(expected))
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
 
 const ROUTING_TIMEOUT_MS = 8000
 const TRANSCRIPTION_TIMEOUT_MS = 10000
@@ -240,6 +276,10 @@ function executeTool(
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
+  }
+
+  if (!isAuthedRequest(req)) {
+    return res.status(401).json({ error: 'Not authenticated' })
   }
 
   const { audio, mimeType, steps, ingredients, currentStep } = req.body ?? {}

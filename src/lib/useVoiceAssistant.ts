@@ -171,6 +171,8 @@ export function useVoiceAssistant({ steps, ingredients }: UseVoiceAssistantArgs)
             currentStep: currentStepRef.current,
           }),
         })
+        // e.g. 401 once the admin session has expired: the body is an error, not a speech result.
+        if (!resp.ok) throw new Error(`Voice assistant request failed: ${resp.status}`)
         result = await resp.json()
       } catch (err) {
         console.error('Voice assistant request failed:', err)
