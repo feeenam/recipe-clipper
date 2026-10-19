@@ -291,8 +291,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Audio too large' })
   }
   const safeMimeType = typeof mimeType === 'string' && mimeType ? mimeType : 'audio/webm'
-  const safeSteps = Array.isArray(steps) ? steps.filter((s): s is string => typeof s === 'string') : []
-  const safeIngredients = Array.isArray(ingredients) ? ingredients.filter((i): i is string => typeof i === 'string') : []
+  // Same size limits as a saved recipe (api/extract-recipe.ts), so one request can't be made arbitrarily large.
+  const capList = (items: unknown, maxItems: number, maxLength: number): string[] =>
+    Array.isArray(items)
+      ? items
+          .filter((item): item is string => typeof item === 'string')
+          .slice(0, maxItems)
+          .map((item) => item.slice(0, maxLength))
+      : []
+  const safeSteps = capList(steps, 60, 1000)
+  const safeIngredients = capList(ingredients, 60, 200)
   const safeCurrentStep = Math.max(0, Math.min(typeof currentStep === 'number' ? currentStep : 0, safeSteps.length))
 
   const apiKey = process.env.GROQ_API_KEY
