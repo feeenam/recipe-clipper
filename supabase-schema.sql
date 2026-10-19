@@ -192,3 +192,51 @@ select cron.schedule(
     delete from public.trial_clips where created_at < now() - interval '2 days';
   $$
 );
+
+-- ============================================================
+-- Prompt-injection hardening: per-user daily extraction cap + source-link cleanup.
+-- Additive: safe to run BEFORE deploying the matching code (nothing existing depends on it).
+-- Needs pg_cron (already enabled by the user-accounts block above).
+-- ============================================================
+
+-- Every request that reaches the model or a page fetch is logged here (refusals included,
+-- since they still cost quota). No policies on purpose: only claim_extraction() writes to it.
+create table if not exists extraction_log (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+create index if not exists extraction_log_user_idx on extraction_log (user_id, created_at);
+alter table extraction_log enable row level security;
+
+-- True when the signed-in caller is still under the limit (rolling 24 hours), and records the
+-- request. The API passes the limit; calling this directly can only ever use up your own quota.
+create or replace function public.claim_extraction(p_daily_limit int default 5) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then
+    return false;
+  end if;
+  -- One request at a time per user, so two simultaneous requests can't both slip under the limit.
+  perform pg_advisory_xact_lock(hashtext(uid::text));
+  if (select count(*) from extraction_log where user_id = uid and created_at > now() - interval '24 hours') >= p_daily_limit then
+    return false;
+  end if;
+  insert into extraction_log (user_id) values (uid);
+  return true;
+end $$;
+
+revoke execute on function public.claim_extraction(int) from public, anon;
+grant execute on function public.claim_extraction(int) to authenticated;
+
+-- Only plain http(s) source links are accepted from now on (a javascript: link in a shared
+-- recipe would run in the visitor's session). Blank any non-http(s) link already saved.
+update recipes set url = '' where url <> '' and url !~* '^https?://';
+
+select cron.schedule(
+  'prune-extraction-log',
+  '23 3 * * *',
+  $$ delete from public.extraction_log where created_at < now() - interval '2 days' $$
+);
