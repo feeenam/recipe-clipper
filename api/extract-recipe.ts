@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js'
 import { Readability } from '@mozilla/readability'
 import { parseHTML } from 'linkedom'
 import { createHash, randomUUID } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
 
 interface ExtractedRecipe {
   title: string
@@ -373,6 +375,97 @@ function clientIpHash(req: VercelRequest): string {
   return createHash('sha256').update(first || req.socket?.remoteAddress || 'unknown').digest('hex')
 }
 
+// --- SSRF guard -------------------------------------------------------------
+// Kept in this file on purpose: Vercel only reliably bundles top-level api/*.ts
+// files, so a shared helper module is not an option (see NOTE in admin-login.ts).
+// Known gap: fetch() re-resolves DNS after we validate, so a DNS-rebinding
+// attacker could still race the check; closing it needs a pinned-IP dispatcher.
+
+export class BlockedUrlError extends Error {}
+
+const MAX_REDIRECTS = 5
+
+function isBlockedIPv4(ip: string): boolean {
+  const [a, b] = ip.split('.').map(Number)
+  return (
+    a === 0 || // "this" network
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) || // CGNAT
+    (a === 169 && b === 254) || // link-local incl. cloud metadata
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && ip.startsWith('192.0.0.')) ||
+    (a === 198 && (b === 18 || b === 19)) || // benchmarking
+    a >= 224 // multicast, reserved, broadcast
+  )
+}
+
+function ipv6ToWords(ip: string): number[] | null {
+  let addr = ip.split('%')[0].toLowerCase()
+  const v4 = addr.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/)
+  if (v4) {
+    const o = v4[2].split('.').map(Number)
+    addr = `${v4[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`
+  }
+  const halves = addr.split('::')
+  if (halves.length > 2) return null
+  const head = halves[0] ? halves[0].split(':') : []
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : []
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null
+  const words = [...head, ...Array(fill).fill('0'), ...tail].map((w) => parseInt(w, 16))
+  return words.length === 8 && words.every((w) => Number.isInteger(w) && w >= 0 && w <= 0xffff) ? words : null
+}
+
+function isBlockedIPv6(ip: string): boolean {
+  const w = ipv6ToWords(ip)
+  if (!w) return true
+  // Allowlist global unicast (2000::/3). That rejects ::, ::1, fc00::/7, fe80::/10,
+  // ff00::/8, IPv4-mapped (::ffff:0:0/96) and NAT64 in one go.
+  if ((w[0] & 0xe000) !== 0x2000) return true
+  if (w[0] === 0x2002) return true // 6to4 embeds an IPv4 address
+  if (w[0] === 0x2001 && (w[1] === 0 || w[1] === 0x0db8)) return true // Teredo, documentation
+  return false
+}
+
+function isBlockedAddress(ip: string): boolean {
+  const family = isIP(ip)
+  if (family === 4) return isBlockedIPv4(ip)
+  if (family === 6) return isBlockedIPv6(ip)
+  return true
+}
+
+async function assertPublicUrl(url: URL): Promise<void> {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BlockedUrlError('scheme')
+  const host = url.hostname.replace(/^\[|\]$/g, '')
+  if (!host) throw new BlockedUrlError('host')
+  const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true })
+  if (addresses.length === 0 || addresses.some((a) => isBlockedAddress(a.address))) {
+    throw new BlockedUrlError('address')
+  }
+}
+
+// Fetches a user-supplied URL, validating the destination before every hop so a
+// public URL cannot redirect us to an internal one.
+export async function safeFetch(startUrl: URL, init: RequestInit): Promise<Response> {
+  let current = startUrl
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    await assertPublicUrl(current)
+    const resp = await fetch(current.toString(), { ...init, redirect: 'manual' })
+    if (resp.status < 300 || resp.status >= 400) return resp
+    const location = resp.headers.get('location')
+    await resp.body?.cancel()
+    if (!location) return resp
+    try {
+      current = new URL(location, current)
+    } catch {
+      throw new BlockedUrlError('redirect')
+    }
+  }
+  throw new BlockedUrlError('too many redirects')
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
@@ -442,9 +535,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (pastedText) {
       extracted = await extractRecipe(pastedText, geminiKey, groqKey)
     } else {
-      const pageResp = await fetch(parsedUrl!.toString(), {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RecipeClipper/1.0)' },
-      })
+      let pageResp: Response
+      try {
+        pageResp = await safeFetch(parsedUrl!, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RecipeClipper/1.0)' },
+        })
+      } catch (err) {
+        if (err instanceof BlockedUrlError) {
+          return res.status(400).json({ error: "That URL isn't allowed" })
+        }
+        throw err
+      }
       if (!pageResp.ok) {
         return res.status(502).json({ error: `Could not fetch that page (${pageResp.status})` })
       }
