@@ -232,7 +232,7 @@ interface LlmRequest {
 
 /** Wraps untrusted text in a tag. Anything that looks like that tag is removed so the text can't close the block early. */
 export function wrapUntrusted(tag: string, text: string): string {
-  const safe = text.replace(new RegExp(`<\\/?\\s*${tag}[^>]*>`, 'gi'), '')
+  const safe = text.replace(new RegExp(`<\\s*\\/?\\s*${tag}[^>]*>`, 'gi'), '')
   return `<${tag}>\n${safe}\n</${tag}>`
 }
 
