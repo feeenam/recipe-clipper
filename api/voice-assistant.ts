@@ -214,7 +214,7 @@ async function routeTranscript(transcript: string, apiKey: string): Promise<Rout
   return { name: toolCall.function.name, args }
 }
 
-function findInformation(query: unknown, ingredients: string[]): string {
+export function findInformation(query: unknown, ingredients: string[]): string {
   const q = typeof query === 'string' ? query.toLowerCase().trim() : ''
 
   if (!q) return "I couldn't find that in this recipe."
@@ -237,7 +237,7 @@ function findInformation(query: unknown, ingredients: string[]): string {
   return match ? `You'll need: ${match}.` : "I couldn't find that in this recipe."
 }
 
-function getStep(direction: unknown, currentStep: number, steps: string[]): { speech: string; newStep: number; finished: boolean } {
+export function getStep(direction: unknown, currentStep: number, steps: string[]): { speech: string; newStep: number; finished: boolean } {
   const dir: Direction = direction === 'next' || direction === 'previous' || direction === 'repeat' || direction === 'current' ? direction : 'current'
 
   let newStep = currentStep
